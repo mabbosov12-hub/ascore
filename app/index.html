@@ -196,6 +196,7 @@ dialog::backdrop{background:rgba(27,28,30,.62)}
       hintWeb: "Buyurtma berish uchun ilovani Telegram botidagi «Mini ilova» tugmasi orqali oching.",
       emptyCart: "Savat bo'sh. Katalogdan mahsulot tanlang.",
       tooBig: "Savat juda katta. Bir nechta mahsulotni olib tashlab, qaytadan yuboring.",
+      tooBigLink: "Savatda juda ko'p mahsulot. Bir nechtasini olib tashlang yoki ilovani pastdagi «📱 Mini ilova» tugmasi orqali oching.",
       noteTg: "Katalogni ko'rishingiz mumkin. Savatni yuborish uchun ilovani botdagi «Mini ilova» tugmasi orqali oching.",
       noteWeb: "Bu ASCORE botining mini ilovasi. Katalogni shu yerda ko'ring, buyurtma uchun uni Telegram ichida oching.",
       foot: "«Demo surat» belgili suratlar namunaviy: mahsulotni aynan ko'rsatmaydi. To'lov mahsulotni qabul qilganda. Narx va qoldiqni bot buyurtma paytida qayta tekshiradi.",
@@ -216,6 +217,7 @@ dialog::backdrop{background:rgba(27,28,30,.62)}
       hintWeb: 'Чтобы оформить заказ, откройте приложение кнопкой «Мини-приложение» в Telegram-боте.',
       emptyCart: 'Корзина пуста. Выберите товар в каталоге.',
       tooBig: 'Корзина слишком большая. Уберите несколько товаров и отправьте снова.',
+      tooBigLink: 'В корзине слишком много товаров. Уберите несколько или откройте приложение кнопкой «📱 Мини-приложение» внизу.',
       noteTg: 'Каталог можно смотреть. Чтобы отправить корзину, откройте приложение кнопкой «Мини-приложение» в боте.',
       noteWeb: 'Это мини-приложение бота ASCORE. Смотрите каталог здесь, а для заказа откройте его в Telegram.',
       foot: 'Фото с отметкой «Демо-фото» служат примером и не показывают товар в точности. Оплата при получении. Бот заново проверяет цену и наличие при оформлении заказа.',
@@ -236,6 +238,7 @@ dialog::backdrop{background:rgba(27,28,30,.62)}
       hintWeb: 'To order, open the app with the “Mini app” button in the Telegram bot.',
       emptyCart: 'Your cart is empty. Pick something from the catalog.',
       tooBig: 'The cart is too large. Remove a few items and send again.',
+      tooBigLink: 'Too many items for this button. Remove a few, or open the app with the “📱 Mini app” button below.',
       noteTg: 'You can browse the catalog. To send the cart, open the app with the “Mini app” button in the bot.',
       noteWeb: "This is the ASCORE bot's mini app. Browse the catalog here; to order, open it inside Telegram.",
       foot: 'Photos marked “Demo photo” are samples and do not show the exact item. You pay on delivery. The bot checks price and stock again when you order.',
@@ -327,9 +330,9 @@ dialog::backdrop{background:rgba(27,28,30,.62)}
       b.setAttribute('aria-pressed', String(b.getAttribute('data-lang') === lang));
     });
     var note = $('note');
-    note.hidden = canSend;
-    if (!canSend) {
-      note.textContent = T(inTg ? 'noteTg' : 'noteWeb') + ' ';
+    note.hidden = inTg;
+    if (!inTg) {
+      note.textContent = T('noteWeb') + ' ';
       var a = el('a', '', T('openBot'));
       a.href = BOT; a.target = '_blank'; a.rel = 'noopener';
       note.appendChild(a);
@@ -470,9 +473,9 @@ dialog::backdrop{background:rgba(27,28,30,.62)}
     box.textContent = '';
     var empty = cart.length < 1;
     $('cdTotalRow').hidden = empty;
-    $('cdSend').hidden = empty || !canSend;
-    $('cdOpenBot').hidden = empty || canSend;
-    $('cdHint').textContent = empty ? '' : T(canSend ? 'hintSend' : (inTg ? 'hintTg' : 'hintWeb'));
+    $('cdSend').hidden = empty || !inTg;
+    $('cdOpenBot').hidden = empty || inTg;
+    $('cdHint').textContent = empty ? '' : T(inTg ? 'hintSend' : 'hintWeb');
     if (empty) { box.appendChild(el('p', 'empty', T('emptyCart'))); return; }
     cart.forEach(function (l) {
       var p = byId[l.id];
@@ -513,12 +516,37 @@ dialog::backdrop{background:rgba(27,28,30,.62)}
     renderBar();
   }
 
+  // Opened from the bot's "Menu" button, sendData is not allowed, so the cart goes as a
+  // /start link (64 characters max): per line size index, color index, 2-digit quantity
+  // and product id, all base 36, lines joined with "_". The bot decodes it the same way.
+  function startPayload() {
+    var parts = [];
+    for (var i = 0; i < cart.length; i++) {
+      var l = cart[i], p = byId[l.id];
+      var si = p.sizes.indexOf(l.s), ci = p.colors.indexOf(l.c);
+      if (si < 0 || si > 35 || ci < 0 || ci > 35) return null;
+      var q = l.q.toString(36);
+      parts.push(si.toString(36) + ci.toString(36) + (q.length < 2 ? '0' + q : q) + l.id.toString(36));
+    }
+    var s = 'c' + parts.join('_');
+    return s.length <= 64 ? s : null;
+  }
+
   function send() {
-    var payload = JSON.stringify({ v: 1, lang: lang, items: cart.map(function (l) { return { id: l.id, s: l.s, c: l.c, q: l.q }; }) });
-    if (new TextEncoder().encode(payload).length > MAX_BYTES) { alert(T('tooBig')); return; }
+    if (canSend) {
+      var payload = JSON.stringify({ v: 1, lang: lang, items: cart.map(function (l) { return { id: l.id, s: l.s, c: l.c, q: l.q }; }) });
+      if (new TextEncoder().encode(payload).length > MAX_BYTES) { alert(T('tooBig')); return; }
+      cart = [];
+      saveCart();
+      tg.sendData(payload); // Telegram closes the mini app and delivers the cart to the bot
+      return;
+    }
+    var start = startPayload();
+    if (!start) { alert(T('tooBigLink')); return; }
     cart = [];
     saveCart();
-    tg.sendData(payload); // Telegram closes the mini app and delivers the cart to the bot
+    tg.openTelegramLink(BOT + '?start=' + start);
+    setTimeout(function () { try { tg.close(); } catch (e) {} }, 400);
   }
 
   function show(d) {
